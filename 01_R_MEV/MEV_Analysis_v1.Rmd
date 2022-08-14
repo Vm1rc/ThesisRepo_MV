@@ -1,0 +1,1689 @@
+---
+title: "MEV_Analysis_v1"
+output: html_notebook
+---
+
+#### Load Libraries ####
+```{r}
+library(ggplot2)
+library("dplyr") 
+library(stargazer)
+library(tidyr)
+library("readxl")
+library("arrow")
+library("tseries")
+library(scales)
+library(reshape)
+library(ggbreak)
+library(forcats)
+library(corrplot)
+library(car)
+library("nlme")
+library("unix")
+library("dynlm")
+library("sandwich")
+library(lmtest)
+library(MASS)
+library(GGally)
+library(xtable)
+
+#rlimit_all() # reading memory limits
+#rlimit_as(1e12)  #increases to ~12GB
+```
+
+
+#### Setting input/output directories ####
+
+```{r}
+options(scipen = 100)
+options(scipen = 0) # scietific notation
+```
+
+
+```{r}
+dir <- "/Users/marcvendramet/Documents/GitHub/MV_MEV-thesis/01_R_MEV"
+dirplots <- "/Users/marcvendramet/Desktop/HSG/Master/MA/99_Overleaf/02_Plots"
+dirInput <- "/Volumes/Extreme SSD"
+
+setwd(dir)
+```
+
+
+#### read data ####
+
+```{r}
+#dfTransactions <- read_excel("/Users/marcvendramet/Desktop/HSG/Master/MA/99_Overleaf/02_Plots/Su#mStats_UniswapV2Transactions.xlsx", sheet = "Summary")
+```
+
+
+```{r}
+dfMaster <- read.csv(paste0(dirInput, "/97_FinalSet/MEV_finalDataSet_v2.csv")) 
+```
+
+```{r}
+dfGasFull <- read.csv(paste0(dirInput, "/97_FinalSet/MEV_finalDataSet.csv")) 
+```
+
+
+```{r}
+# not used, because we use the data included in the master file
+#dfGasFull <- read_parquet(paste0(dirInput, "/01_GasData/GasPriceAll.par")) 
+#dfGasFull <- read.csv(paste0(dirInput, "/01_GasData/GasPriceAll.csv")) 
+```
+
+
+```{r}
+colnames(dfMaster)
+```
+
+
+
+```{r}
+# Using data pre-outlier handling
+dfGas <- subset(dfGasFull, select = c("avg_gas", "median_gas", "threshold_gas", "transaction_count", "price_USD", "total_gasUsed")) 
+# 
+```
+
+```{r}
+#dfGas$block_number <- as.numeric(dfGas$block_number)
+
+#df1 <- lapply(dfGas, function(x) {as.numeric(x)})
+```
+
+
+#### Descriptive statistics 
+Attention: distignuish between for and after outlier handling (done in python for v2)
+```{r}
+stargazer(dfGas, digits = 0, align=FALSE ,column.sep.width = "5pt",type = "text" )
+```
+```{r}
+stargazer(dfGas, digits = 0, align=FALSE ,column.sep.width = "5pt",type =  )
+```
+
+#### Plots: gas price from GasPriceAll(v1)
+
+
+##### Data adjustments
+Additinal variable creation
+```{r}
+dfGasFull$gasPerTx <- dfGasFull$total_gasUsed/dfGasFull$transaction_count
+```
+
+Remove outliers
+```{r}
+dfGasFull[dfGasFull$avg_gas > 10000,] %>%
+  arrange(desc(avg_gas))
+
+#dfGasFull[dfGasFull$avg_gas > quantile(dfGasFull$avg_gas, probs = c(0.999995)),] %>%
+#  arrange(desc(avg_gas))
+
+```
+
+```{r}
+# Alternative: windosrizing https://www.rdocumentation.org/packages/DescTools/versions/0.99.45/topics/Winsorize
+dfGasFull$avg_gas_clean <- dfGasFull$avg_gas
+dfGasFull$avg_gas_clean[dfGasFull$avg_gas_clean > 10000] <- 
+  mean(dfGasFull$avg_gas_clean[dfGasFull$avg_gas_clean < 10000])
+
+#dfGasFull$avg_gas_clean[dfGasFull$avg_gas_clean > quantile(dfGasFull$avg_gas, probs = c(0.99999))] <- 
+#  mean(dfGasFull$avg_gas_clean[dfGasFull$avg_gas_clean < quantile(dfGasFull$avg_gas, probs = c(0.99999))])
+
+```
+
+
+##### Avg gas price over time
+
+Including otuliers
+```{r}
+# https://community.rstudio.com/t/how-to-label-some-vertical-lines-in-ggplot/59560
+# https://www.forbes.com/sites/youngjoseph/2020/06/10/why-a-mysterious-crypto-user-paid-26-million-to-send-merely-130-in-ethereum/
+# https://insights.glassnode.com/defi-spike-ethereum-gas-price/
+ggplot(dfGasFull, aes(x=block_number, y=avg_gas)) + geom_line() +
+  geom_line(color="blue") +
+  labs(y ="avg_gas in Gwei", x = "Block number") +
+  annotate(geom = "vline",
+             x = c(10237208),
+             xintercept = c(10237208),
+             linetype = c("dashed")) +
+  annotate(geom = "text",
+             label = c("Accidental 2.6m $ gas fee"),
+             x = c(10248000),
+             y = c(2e6),
+             angle = 90, 
+             vjust = 1)
+```
+```{r}
+ggsave(filename = "avgGas_overtime.png", path = dirplots, width = 15, height = 8, units = "cm")
+```
+
+Excluding otuliers
+```{r}
+# https://community.rstudio.com/t/how-to-label-some-vertical-lines-in-ggplot/59560
+# https://www.forbes.com/sites/youngjoseph/2020/06/10/why-a-mysterious-crypto-user-paid-26-million-to-send-merely-130-in-ethereum/
+ggplot(dfGasFull, aes(x=block_number, y=avg_gas_clean)) +
+  geom_line(color="blue") +
+  labs(y ="avg_gas in Gwei", x = "Block number") +
+  geom_smooth(method = "lm", color = "red")
+```
+
+```{r}
+# spike 1: 11912403 2021-02-23, ETh price drop, https://decrypt.co/58533/ethereum-fees-shoot-above-30-amid-sudden-market-dip
+# spike 2: 12422680 2021-05-13, ETH ATH https://finance.yahoo.com/news/ethereum-gas-prices-fall-lowest-052059169.html?guccounter=1&guce_referrer=aHR0cHM6Ly93d3cuZ29vZ2xlLmNvbS8&guce_referrer_sig=AQAAABFmU_LIF4-A9a6J5w9b7Zv12_kOLZV7AKtZQC5clBa3-fYiXEorAY9zrzDSdUMC_qTwWhDdt3ds41akUtBE4Dzjl0gNoDE5Mel0DY8P9ksjxx9xVUitwNJSMJaQ9oSxUDS_Jd6ntg3ZR7N_vzLvqSHHQWGy9FbT4XJSebR6vGaG
+ggplot(dfGasFull, aes(x=block_number, y=avg_gas_clean)) +
+  geom_point(color="blue", size = 0.5) +
+  labs(y ="avg_gas in Gwei", x = "Block number") +
+  geom_smooth(method = "lm", color = "red") + 
+  annotate(geom = "vline",
+             x = c(11912403, 12470645),
+             xintercept = c(11912403, 12470645),
+             linetype = c("dashed")) +
+  annotate(geom = "text",
+             label = c("12% ETH dip", "ETH ATH"),
+             x = c(11952403, 12500645),
+             y = c(3000,3000),
+             angle = 90, 
+             vjust = 1)
+```
+
+```{r}
+ggsave(filename = "avgGasClean_overtime.png", path = dirplots, width = 15, height = 8, units = "cm")
+```
+
+##### Median gas usage over time
+
+```{r}
+ggplot(dfGasFull, aes(x=block_number, y= median_gas)) +
+  geom_point(color="blue") +
+  labs(y ="avg_gas in Gwei", x = "Block number") +
+  geom_smooth(method = "lm", color = "red")
+```
+
+```{r}
+ggsave(filename = "medianGas_overtime.png", path = dirplots, width = 15, height = 8, units = "cm")
+```
+
+##### Threshold gas usage over time
+
+```{r}
+ggplot(dfGasFull, aes(x=block_number, y= threshold_gas)) +
+  geom_point(color="blue") +
+  labs(y ="avg_gas in Gwei", x = "Block number") +
+  geom_smooth(method = "lm", color = "red")
+```
+
+```{r}
+ggsave(filename = "thresholdGas_overtime.png", path = dirplots, width = 15, height = 8, units = "cm")
+```
+
+
+##### gas usage over time
+
+```{r}
+ggplot(dfGasFull, aes(x=block_number, y=gasPerTx)) + geom_line() +
+  geom_line(color="blue") +
+  labs(y ="Average gas used per transaction", x = "Block number") +
+  geom_smooth(method = "lm", color = "red")
+```
+```{r}
+ggsave(filename = "averageGasUsage.png", path = dirplots, width = 15, height = 8, units = "cm")
+```
+
+
+#### Plots: final_set
+##### load MEV_Final v2
+
+```{r}
+#rm(dfMaster, dfMasterAttack)
+dfMasterAll <- read.csv(paste0(dirInput, "/97_FinalSet/MEV_finalDataSet_v2.csv")) 
+dfMasterAll$X <- NULL
+```
+
+```{r}
+dfMasterAll$ts <- as.Date(dfMasterAll$ts)
+```
+
+```{r}
+dfMasterAll$attacks_GasFee_ETH <- dfMasterAll$attacks_GasFee_Gwei / 1000000000
+```
+
+```{r}
+colnames(dfMasterAll)
+
+```
+##### Descriptive stats
+```{r}
+dfMasterAll_selected <- subset(dfMasterAll, select = c("AttackCount", "total_gasFee_ETH", "attacks_GasFee_ETH", "attacks_AttackGasFeeShare", "attacks_gasPrice_min", "attacks_gasPrice_max","attacks_gasPrice_avg"))
+stargazer(dfMasterAll_selected, digits = 5, align=FALSE ,column.sep.width = "5pt",type = "text" )
+```
+
+##### Number of attacks over time
+
+
+```{r}
+# adding time labels: https://stackoverflow.com/questions/30018187/changing-tick-intervals-when-x-axis-values-are-dates
+# drop in may 2021 due to uniswap v3
+ggplot(dfMasterAll, aes(x=ts, y=AttackCount_10k)) +
+  geom_line(color="blue") +
+  labs(y ="Attack count per 10k blocks", x = "Date") +
+  geom_smooth(method = "lm", color = "red") +
+  scale_x_date(date_breaks = "months" , date_labels = "%b-%y")
+```
+```{r}
+ggsave(filename = "MA10k_NrAttacks_date.png", path = dirplots, width = 15, height = 8, units = "cm")
+```
+
+```{r}
+dfMasterAll %>% count(AttackCount, sort = TRUE) %>% arrange(desc(n))
+```
+
+
+
+
+```{r}
+# adding time labels: https://stackoverflow.com/questions/30018187/changing-tick-intervals-when-x-axis-values-are-dates
+ggplot(dfMasterAll, aes(x=block_number, y=AttackCount_10k)) +
+  geom_line(color="blue") +
+  labs(y ="Attack count per 10k blocks", x = "Block number") +
+  geom_smooth(method = "lm", color = "red") 
+```
+
+```{r}
+ggsave(filename = "MA10k_NrAttacks_blocknr.png", path = dirplots, width = 15, height = 8, units = "cm")
+```
+
+```{r}
+ggplot(dfMasterAll, aes(x=block_number, y=AttackCount)) +
+  geom_point(color="blue", size = 0.5) +
+  labs(y ="Total number of attacks per block", x = "Block number")  
+```
+
+```{r}
+ggsave(filename = "NrAttacks_block.png", path = dirplots, width = 15, height = 8, units = "cm")
+```
+
+
+Subset creation to filter out block with zero attacks
+```{r}
+dfHistogram <- dfMasterAll %>% filter(AttackCount > 0)
+```
+
+```{r}
+ggplot(dfHistogram, aes(x= AttackCount)) +
+  geom_histogram(binwidth=1, color='blue',fill='blue', alpha=0.3) +
+  labs(y ="Count", x = "Attacks per block") +
+  scale_x_continuous(limits = c(0,11), breaks=seq(0,10,1))+
+  scale_y_continuous(labels = comma)
+```
+```{r}
+ggsave(filename = "NrAttacks_Histogram.png", path = dirplots, width = 15, height = 8, units = "cm")
+```
+
+##### GasFees for attacks over time
+
+```{r}
+# explanation for drop in April 2021 is adoption of flashbots, see p.9 "A Flash(bot) in the Pan: Measuring Maximal Extractable Value in Private Pools"
+# adding time labels: https://stackoverflow.com/questions/30018187/changing-tick-intervals-when-x-axis-values-are-dates
+ggplot(dfMasterAll, aes(x=block_number, y=attacks_GasFee_ETH)) +
+  geom_point(color="blue", size = 0.5) +
+  labs(y ="Gas fees from attacks (ETH)", x = "Block number")  +
+  annotate(geom = "vline",
+             x = c(12200000),
+             xintercept = c(12200000),
+             linetype = c("dashed")) +
+  annotate(geom = "text",
+             label = c("Adoption of flashbots"),
+             x = c(12250000),
+             y = c(4),
+             angle = 90, 
+             vjust = 1)+
+  geom_smooth(method = "lm", color = "red") 
+```
+```{r}
+ggsave(filename = "GasFees_attacks_ETH.png", path = dirplots, width = 15, height = 8, units = "cm")
+```
+
+##### Avg GasFees per attack over time
+
+For average calculation before anda fter flashbots:
+
+```{r}
+a <- dfMasterAll %>%
+  group_by(flashbots_Flag) %>%
+  summarise(SumAttackFees = sum(attacks_GasFee_ETH))
+```
+
+```{r}
+b <- dfMasterAll %>%
+  group_by(flashbots_Flag) %>%
+  summarise(SumAttackCount = sum(AttackCount))
+```
+
+```{r}
+a$SumAttackFees / b$SumAttackCount
+# returns avergae gas fee per attack per flashbot dummy in ETH
+```
+
+
+
+For plots:
+
+```{r}
+dfMasterAll$attacks_GasFeePerAttack <- dfMasterAll$attacks_GasFee_ETH / dfMasterAll$AttackCount
+dfMasterAll$attacks_GasFeePerAttack <- dfMasterAll$attacks_GasFeePerAttack %>% replace_na(0)
+```
+
+```{r}
+dfGasFees <- dfMasterAll[!(dfMasterAll$AttackCount==0),]
+```
+
+```{r}
+dfGasFees <- dfGasFees %>%
+  arrange(block_number) %>%
+    mutate(MA_gasFee = rollmean(attacks_GasFeePerAttack, k = 100, fill = NA, align = "right")) 
+
+```
+
+```{r}
+# adding time labels: https://stackoverflow.com/questions/30018187/changing-tick-intervals-when-x-axis-values-are-dates
+ggplot(dfGasFees, aes(x=ts, y=MA_gasFee)) +
+  geom_point(color="blue", size = 0.5) +
+  labs(y ="Avg gas fee per attack over 100 blocks with attacks", x = "Date") +
+  geom_smooth(method = "lm", color = "red") 
+  #
+```
+
+```{r}
+ggsave(filename = "MA100GasFeeperAttack.png", path = dirplots, width = 15, height = 10, units = "cm")
+```
+
+#####  AVG GasPrice for attacks over time
+```{r}
+# adding time labels: https://stackoverflow.com/questions/30018187/changing-tick-intervals-when-x-axis-values-are-dates
+ggplot(dfMasterAll, aes(x=ts, y=attacks_gasPrice_avg)) +
+  geom_line(color="blue") +
+  labs(y ="Average gas price from attacks (Gwei)", x = "Block number") 
+  #geom_smooth(method = "lm", color = "red") 
+```
+```{r}
+ggsave(filename = "GasPrice_attacks_gwei.png", path = dirplots, width = 15, height = 8, units = "cm")
+```
+
+#####  Gas usage per attack over time
+```{r}
+dfMasterAll$attacks_GasUsedPerAttack <- dfMasterAll$attacks_GasUsed / dfMasterAll$AttackCount
+dfMasterAll$attacks_GasUsedPerAttack <- dfMasterAll$attacks_GasUsedPerAttack %>% replace_na(0)
+```
+
+```{r}
+dfGasUsage <- dfMasterAll[!(dfMasterAll$AttackCount==0),]
+```
+
+
+```{r}
+dfGasUsage <- dfGasUsage %>%
+  arrange(block_number) %>%
+    mutate(MA_gasUsage = rollmean(attacks_GasUsedPerAttack, k = 100, fill = NA, align = "right")) 
+
+```
+
+
+```{r}
+# adding time labels: https://stackoverflow.com/questions/30018187/changing-tick-intervals-when-x-axis-values-are-dates
+ggplot(dfGasUsage, aes(x=ts, y=MA_gasUsage)) +
+  geom_line(color="blue") +
+  labs(y ="Avg gas per attack over 100 blocks with attacks", x = "Date") +
+  geom_smooth(method = "lm", color = "red") 
+  #
+```
+
+```{r}
+ggsave(filename = "MA100GasUsedperAttack.png", path = dirplots, width = 15, height = 10, units = "cm")
+```
+
+```{r}
+ggplot(dfGasUsage, aes(x= attacks_GasUsedPerAttack)) +
+  geom_histogram(color='blue',fill='blue', alpha=0.3, bins = ) 
+```
+
+```{r}
+ggsave(filename = "GasUsedPerAttack.png", path = dirplots, width = 15, height = 8, units = "cm")
+```
+
+#####  Gas fee share
+
+```{r}
+ggplot(dfMasterAll, aes(x=ts, y=attacks_AttackGasFeeShare)) +
+  geom_line(color="blue") +
+  labs(y ="Gas fee share of attacks (%)", x = "Block number") 
+  #geom_smooth(method = "lm", color = "red") 
+```
+
+
+```{r}
+ggplot(dfMasterAll, aes(x=ts, y=attacks_AttackGasFeeShare)) +
+  geom_point(color="blue", size = 0.5) +
+  labs(y ="Gas fee share of attacks (%)", x = "Block number") 
+  #geom_smooth(method = "lm", color = "red") 
+```
+
+```{r}
+ggsave(filename = "GasFeeShhare_attacks_percentage.png", path = dirplots, width = 15, height = 8, units = "cm")
+```
+
+##### Gas fee share histogram
+
+With zero attack blocks
+```{r}
+ggplot(dfMasterAll, aes(x= attacks_AttackGasFeeShare)) +
+  geom_histogram(color='blue',fill='blue', alpha=0.3, bins = 50) +
+  labs(y ="Count", x = "Gas fee share of attacks (%)") +
+  scale_y_break(c(500000, 1800000), ticklabels = c(1800000,1900000, 2000000)) +
+  scale_y_continuous(labels = comma)
+  #scale_x_continuous(limits = c(0,10), breaks=seq(0,10,1))+
+  #scale_y_continuous(labels = comma)
+```
+```{r}
+ggsave(filename = "GasFeeShhare_attacks_Histogram.png", path = dirplots, width = 15, height = 8, units = "cm")
+```
+
+Only blocks with attacks
+```{r}
+#remove blocks without attacks
+dfAttacksOnly <- dfMasterAll[!(dfMasterAll$AttackCount==0),]
+```
+
+
+```{r}
+mean(dfMasterAll$attacks_AttackGasFeeShare)
+```
+
+
+Mean of gas fee share without zero attack blocks
+```{r}
+mean(dfAttacksOnly$attacks_AttackGasFeeShare)
+```
+
+
+```{r}
+ggplot(dfAttacksOnly, aes(x= attacks_AttackGasFeeShare)) +
+  geom_histogram(color='blue',fill='blue', alpha=0.3, bins = 50) +
+  labs(y ="Count", x = "Gas fee share of attacks (%)") +
+  scale_y_continuous(labels = comma)
+  #scale_x_continuous(limits = c(0,10), breaks=seq(0,10,1))+
+  #scale_y_continuous(labels = comma)
+```
+```{r}
+ggsave(filename = "GasFeeShare_attacksOnly_Histogram.png", path = dirplots, width = 15, height = 8, units = "cm")
+```
+
+
+
+#####  Multiple lines: attack gasfees, total gasfees (remove outlier oversvation based on avg ags price), ratio
+Subset creation to filter out block with zero share
+```{r}
+#dfHistogramShare <- dfMasterAll %>% filter(attacks_AttackGasFeeShare > 0)
+```
+
+
+```{r}
+dfMultiLine <- subset(dfMasterAll, select = c("block_number", "attacks_AttackGasFeeShare", "total_gasFee_ETH")) 
+```
+
+```{r}
+#dfMultiLine <- melt(dfMultiLine, id.vars = "block_number") # trasnfroming to long format, but only if same scale for variables
+dfMultiLine<-dfMultiLine[!(dfMultiLine$total_gasFee_ETH>100 ),]
+
+```
+
+```{r}
+#ggplot(dfMultiLine, aes(x = block_number, y = value, color = variable)) +
+#  geom_line()
+```
+
+
+```{r}
+# Outliers removed, see above
+# https://r-graph-gallery.com/line-chart-dual-Y-axis-ggplot2.html
+coeff <- max(dfMultiLine$total_gasFee_ETH)
+
+ggplot(dfMultiLine, aes(x=block_number)) +
+  geom_line( aes(y=attacks_AttackGasFeeShare),color="blue") +
+  geom_line( aes(y=total_gasFee_ETH/coeff), color="coral4",alpha=0.3) +
+  labs(x = "Block number") + 
+  scale_y_continuous(
+    name = "Gas fee share of attacks (%)", 
+    sec.axis = sec_axis(~ . *coeff, name = "Total gas fees per block (ETH)"))+
+   theme(axis.title.y = element_text(color = "blue", size=13), axis.title.y.right=element_text(color = "coral4", size=13))
+```
+
+```{r}
+ggsave(filename = "GasFeeShareAndtotalFee_Multiline.png", path = dirplots, width = 15, height = 8, units = "cm")
+```
+
+#####  GasFees-ratio attack Vs total over time
+
+```{r}
+# adding time labels: https://stackoverflow.com/questions/30018187/changing-tick-intervals-when-x-axis-values-are-dates
+ggplot(dfMasterAll, aes(x=block_number, y=attacks_AttackGasFeeShare)) +
+  geom_line(color="blue") +
+  labs(y ="Gas fee share of attacks (%)", x = "Block number") +
+  geom_smooth(method = "lm", color = "red", formula = y ~ x + I(x^2)) 
+```
+
+#####  GasFees avg per attack before and after flashbots
+
+```{r}
+#remove blocks without attacks
+dfFlashbots <- dfMasterAll[!(dfMasterAll$AttackCount==0),]
+```
+
+```{r}
+dfFlashbots %>%
+  group_by(flashbots_Flag) %>%
+  summarize(Mean = mean(attacks_GasFeePerAttack, na.rm=TRUE)) %>%
+  ggplot(aes(x=factor(flashbots_Flag), y=Mean)) +
+  geom_col(color='blue',fill='blue', alpha=0.3) +
+  scale_y_continuous(labels = comma) +
+  labs(y ="Mean gas fee per attack (Gwei)", x = "Flashbots active No/Yes")
+  
+```
+```{r}
+ggsave(filename = "GasFeeFlashbots.png", path = dirplots, width = 15, height = 8, units = "cm")
+```
+
+#### Plots: AttackMaster data set and MEV_Final
+Attention: Check if Attacjk Master Vs. AttackMaster_Full makes more sense!
+
+```{r}
+#rm(dfMaster, dfMasterAll)
+dfMasterAttack <- read_parquet(paste0(dirInput, "/98_Output/AttacksUniswapV2_Master_v2.par")) 
+#dfMasterAttack$X <- NULL
+```
+
+```{r}
+colnames(dfMasterAttack)
+```
+
+#####  Top 15 assets /tokens
+
+```{r}
+dfMasterAttack %>% 
+  count(tf_tokenAddress, sort = TRUE) %>%
+  arrange(desc(n))%>%
+  head(15)
+```
+
+
+
+```{r}
+dfMasterAttack %>% 
+  count(tf_tokenAddress, sort = TRUE) %>%
+  arrange(desc(n))%>%
+  head(15)%>%
+  ggplot(aes(x=fct_rev(fct_reorder(tf_tokenAddress, n)),y=n)) +
+  geom_col(color='blue',fill='blue', alpha=0.3) + theme(axis.text.x = element_text(angle = 90)) +
+  scale_x_discrete(label=function(x) stringr::str_trunc(x, 20))+
+  labs(y ="Count", x = "Token address")
+  #scale_x_discrete(label=function(x) abbreviate(x, minlength=15))
+#function(x) stringr::str_trunc(x, 12)
+```
+
+```{r}
+ggsave(filename = "Top15Tokens.png", path = dirplots, width = 15, height = 8, units = "cm")
+```
+
+```{r}
+dfMasterAttack %>% 
+  count(poolId, sort = TRUE) %>%
+  arrange(desc(n))%>%
+  head(15)
+```
+
+
+#####  Top 15 LPs
+
+```{r}
+dfMasterAttack %>% 
+  count(poolId, sort = TRUE) %>%
+  arrange(desc(n))%>%
+  head(15)
+```
+
+
+```{r}
+dfMasterAttack %>% 
+  count(poolId, sort = TRUE) %>%
+  arrange(desc(n))%>%
+  head(15)%>%
+  ggplot(aes(x=fct_rev(fct_reorder(poolId, n)),y=n)) +
+  geom_col(color='blue',fill='blue', alpha=0.3) + theme(axis.text.x = element_text(angle = 90)) +
+  scale_x_discrete(label=function(x) stringr::str_trunc(x, 20))+
+  labs(y ="Count", x = "Liquidty pool address")
+  #scale_x_discrete(label=function(x) abbreviate(x, minlength=15))
+#function(x) stringr::str_trunc(x, 12)
+```
+```{r}
+ggsave(filename = "Top15LPs.png", path = dirplots, width = 15, height = 8, units = "cm")
+```
+
+#####  Top 15 Attackers 
+
+```{r}
+#remove second attack transaction
+dfTopAttackers <- dfMasterAttack[!(dfMasterAttack$within_transaction_order==2),]
+
+```
+
+```{r}
+dfTopAttackers %>% 
+  count(from_address, sort = TRUE) %>%
+  arrange(desc(n))%>%
+  head(15)
+```
+
+
+```{r}
+# nr.1 is 0xf6da21E95D74767009acCB145b96897aC3630BaD Ethhermine MEV sender
+# nr.2 is 0x7A08eD5862ba4c2887Ef169A17637EADb27bEEcF proxy contract with funny comments
+dfTopAttackers %>% 
+  count(from_address, sort = TRUE) %>%
+  arrange(desc(n))%>%
+  head(15)%>%
+  ggplot(aes(x=fct_rev(fct_reorder(from_address, n)),y=n)) +
+  geom_col(color='blue',fill='blue', alpha=0.3) + theme(axis.text.x = element_text(angle = 90)) +
+  scale_x_discrete(label=function(x) stringr::str_trunc(x, 20))+
+  labs(y ="Count", x = "Attacker origin address")
+  #scale_x_discrete(label=function(x) abbreviate(x, minlength=15))
+#function(x) stringr::str_trunc(x, 12)
+```
+```{r}
+ggsave(filename = "Top15Attackers.png", path = dirplots, width = 15, height = 8, units = "cm")
+```
+
+#####  Proxy-attacks count over time
+```{r}
+#remove blocks without attacks
+dfProxyShare <- dfMasterAll[!(dfMasterAll$AttackCount==0),]
+
+```
+
+```{r}
+# niot surprising as 95% of all attacks are proxy-based
+ggplot(dfMasterAll, aes(x=block_number, y=ProxyAttacks_Count_10k)) + # use ts for months
+  geom_line(color="blue") +
+  labs(y ="Proxy attack count per 10k blocks", x = "Block number") +
+  geom_smooth(method = "lm", color = "red") 
+  #scale_x_date(date_breaks = "months" , date_labels = "%b-%y")
+```
+
+```{r}
+ggsave(filename = "ProxyAttackMA_overTime.png", path = dirplots, width = 15, height = 8, units = "cm")
+```
+
+#####  Proxy-attacks share over time
+```{r}
+# Almost no zero values - mistake or auto filtered out? see histogram
+# why does it behave like thhe attacks overall? should have differnet movement => because the blocks without attacks lead to this
+ggplot(dfMasterAll, aes(x=block_number, y=ProxyAttack_Share_10k)) + # use ts for months
+  geom_line(color="blue") +
+  labs(y ="Attack count per 10k blocks", x = "Date") +
+  geom_smooth(method = "lm", color = "red") 
+  #scale_x_date(date_breaks = "months" , date_labels = "%b-%y")
+```
+```{r}
+ggsave(filename = "ProxyAttackShareMA_overTime.png", path = dirplots, width = 15, height = 8, units = "cm")
+```
+
+
+```{r}
+# Almost no zero values - mistake or auto filtered out? see histogram
+# why does it behave like thhe attacks overall? should have differnet movement
+ggplot(dfProxyShare, aes(x=block_number, y=ProxyAttack_Share)) + # use ts for months
+  geom_line(color="blue") +
+  labs(y ="Attack count per 10k blocks", x = "Date") +
+  geom_smooth(method = "lm", color = "red") 
+  #scale_x_date(date_breaks = "months" , date_labels = "%b-%y")
+```
+
+#####  Proxy-attacks share histogram 
+
+
+
+Mean over all blcoks incl. block without attacks
+```{r}
+mean(dfMasterAll$ProxyAttack_Share)
+```
+
+
+10k MA
+```{r}
+ggplot(dfMasterAll, aes(x= ProxyAttack_Share_10k)) +
+  geom_histogram(bins = 10, color='blue',fill='blue', alpha=0.3) +
+  labs(y ="Count", x = "Attacks per block") 
+  #scale_x_continuous(limits = c(0,10), breaks=seq(0,10,1))+
+  #scale_y_continuous(labels = comma)
+```
+```{r}
+ggsave(filename = "ProxyAttackShareMA_Histogram.png", path = dirplots, width = 15, height = 8, units = "cm")
+```
+
+
+Mean with only blocks that contain attacks
+```{r}
+mean(dfProxyShare$ProxyAttack_Share)
+```
+
+Zero blocks already filtered out
+```{r}
+ggplot(dfProxyShare, aes(x= ProxyAttack_Share)) +
+  geom_histogram(bins = 8, color='blue',fill='blue', alpha=0.3) +
+  labs(y ="Count", x = "Attacks per block") +
+  scale_y_continuous(labels = comma)
+  #scale_x_continuous(limits = c(0,10), breaks=seq(0,10,1))+
+  #
+```
+#####  Different proxy contarcts and attack count 
+Different proxy contracts
+```{r}
+dfMasterAttack %>%
+  filter(ProxyFlag == 1) %>%
+  filter(within_transaction_order == 1) %>%
+  count(from_address, sort = TRUE) %>%
+  arrange(desc(n))
+  #group_by(from_address) %>%
+  #summarize(n = n_distinct(from_address))
+```
+
+
+#####  Attacks with gas price <= 1 (MEV-relay proxy) Count
+```{r}
+dfMasterAttack %>%
+  mutate(trans_gasPrice = replace(trans_gasPrice, trans_gasPrice<=1, 0)) %>%
+  mutate(trans_gasPrice = replace(trans_gasPrice, trans_gasPrice>1, 1)) %>%
+  group_by(trans_gasPrice) %>%
+  ggplot(aes(x=factor(trans_gasPrice))) +
+  geom_bar(color='blue',fill='blue', alpha=0.3) +
+  scale_y_continuous(labels = comma) +
+  labs(y ="Count", x = "MEV-relay used Yes/No")
+  
+```
+
+```{r}
+ggsave(filename = "MEVRelay_Histogram.png", path = dirplots, width = 15, height = 8, units = "cm")
+```
+
+#####  Attacks with gas price <= 1 (MEV-relay proxy) Over time => WIP
+
+
+```{r}
+#remove blocks without attacks
+dfMEVRelay <- dfMasterAttack
+```
+
+```{r}
+ dfMasterAttack %>%
+  mutate(trans_gasPrice = replace(trans_gasPrice, trans_gasPrice<=1, 0)) %>%
+  mutate(trans_gasPrice = replace(trans_gasPrice, trans_gasPrice>1, 1)) %>%
+  filter(trans_gasPrice == 0) %>%
+  count(block_number, sort = TRUE) %>%
+  ggplot(aes(x=block_number, y=n)) + # use ts for months
+  geom_line(color="blue") +
+  labs(y ="Proxy attack count per 10k blocks", x = "Block number") +
+  geom_smooth(method = "lm", color = "red") 
+
+  
+```
+
+
+####  Regression Analysis
+#####  Load MEV_Final_v2 and subset variables
+
+```{r}
+
+dfRegression <- read.csv("/Volumes/Extreme SSD/97_FinalSet/MEV_Regression_v1.csv")
+dfRegressionSmall <- read.csv("/Volumes/Extreme SSD/97_FinalSet/MEV_RegressionSmall_v1.csv")
+# factor transfromation to be done after import!
+```
+
+OR
+```{r}
+#rm(dfMaster, dfMasterAttack)
+dfMasterAll <- read.csv(paste0(dirInput, "/97_FinalSet/MEV_finalDataSet_v2.csv")) 
+dfMasterAll$X <- NULL
+```
+
+```{r}
+# add ID column without gaps for gls() function
+dfMasterAll$IDSeq <- seq.int(nrow(dfMasterAll))
+```
+
+
+```{r}
+#confert to dateformat including time. Attention: as.Date removes time component
+dfMasterAll$tsDateTime <- as.POSIXct(dfMasterAll$ts, format="%Y-%m-%d%H:%M:%S")
+dfMasterAll$tsDate <- as.Date(dfMasterAll$ts)
+```
+
+```{r}
+str(dfMasterAll)
+
+```
+
+
+```{r}
+dfMasterAll$attacks_GasFee_ETH <- dfMasterAll$attacks_GasFee_Gwei / 1000000000
+```
+
+```{r}
+# scale difficulty 0-1
+dfMasterAll$difficulty_MaxMin <- (dfMasterAll$difficulty - min(dfMasterAll$difficulty)) / (max(dfMasterAll$difficulty) - min(dfMasterAll$difficulty))  # Scale to 0/1
+
+```
+
+```{r}
+# log transform difficulty
+dfMasterAll$difficulty_log <- log(dfMasterAll$difficulty)
+
+```
+
+
+```{r}
+colnames(dfMasterAll)
+
+```
+
+```{r}
+dfRegression <- subset(dfMasterAll, select = c("IDSeq","block_number", "avg_gas", "median_gas", "threshold_gas", "attacks_GasFee_Gwei", "attacks_GasFee_ETH", "attacks_GasUsed", "AttackCount", "attacks_gasPrice_max", "attacks_gasPrice_avg", "attacks_AttackGasFeeShare" ,"difficulty", "price_USD_delta", "transaction_count_block", "AttackCount_10k", "flashbots_Flag", "Month", "WeekNumber", "Weekyday", "Hour", "tsDateTime", "difficulty_MaxMin", "difficulty_log")) 
+```
+
+```{r}
+dfRegression <- dfRegression %>%
+mutate(avg_gas_lag1=lag(avg_gas, n= 1)) %>%
+na.omit()
+```
+
+
+Small test set (short)
+```{r}
+dfRegressionSmall <- dfRegression[1:10000,]
+
+```
+
+```{r}
+write.csv(dfRegression,"/Volumes/Extreme SSD/97_FinalSet/MEV_Regression_v1.csv", row.names = FALSE)
+write.csv(dfRegressionSmall,"/Volumes/Extreme SSD/97_FinalSet/MEV_RegressionSmall_v1.csv", row.names = FALSE)
+```
+
+```{r}
+head(dfRegressionSmall)
+```
+
+
+```{r}
+dfRegression$flashbots_Flag <- as.factor(dfRegression$flashbots_Flag)
+dfRegression$Month <- as.factor(dfRegression$Month)
+dfRegression$WeekNumber <- as.factor(dfRegression$WeekNumber)
+dfRegression$Weekyday <- as.factor(dfRegression$Weekyday)
+dfRegression$Hour <- as.factor(dfRegression$Hour)
+```
+
+```{r}
+dfRegressionSmall$flashbots_Flag <- as.factor(dfRegressionSmall$flashbots_Flag)
+dfRegressionSmall$Month <- as.factor(dfRegressionSmall$Month)
+dfRegressionSmall$WeekNumber <- as.factor(dfRegressionSmall$WeekNumber)
+dfRegressionSmall$Weekyday <- as.factor(dfRegressionSmall$Weekyday)
+dfRegressionSmall$Hour <- as.factor(dfRegressionSmall$Hour)
+```
+
+```{r}
+str(dfRegression)
+#str(dfRegressionSmall)
+```
+
+```{r}
+# Check for Na values: none found if both TRUE
+dfRegression %>% drop_na() %>%
+  dim() == dim(dfRegression)
+```
+
+
+
+
+#####  Correlation matrix
+```{r}
+dfCorrplot <- select_if(dfRegression, is.numeric)
+dfCorrplot$block_number <- NULL
+dfCorrplot <- cor(dfCorrplot)
+corrplot(dfCorrplot, 
+         method = "color", type = "upper", 
+         #addCoef.col = "black", # Add coefficient of correlation
+         tl.cex = 1, tl.col="black", tl.srt=45, # Label size, color, and rotation
+         #number.cex = 2.5, cl.pos = "n", # Number size and remove legend
+         # hide correlation coefficient on the principal diagonal
+         diag=FALSE)
+```
+
+
+
+#####  Define models
+```{r}
+# avg_gas: Base model without Ar term
+LM00_gasPriceAvg <- avg_gas ~ attacks_GasFee_Gwei + AttackCount + flashbots_Flag + flashbots_Flag:attacks_GasFee_Gwei + difficulty_log + price_USD_delta + transaction_count_block + Weekyday + Hour  # + attacks_GasUsed or  + avg_gas_lag1 for lagged DV
+
+# median_gas: Base model without Ar term
+LM00_gasPriceMedian <- median_gas ~ attacks_GasFee_Gwei + AttackCount + flashbots_Flag + flashbots_Flag:attacks_GasFee_Gwei + difficulty_log + price_USD_delta + transaction_count_block + Weekyday + Hour  # + attacks_GasUsed or  + avg_gas_lag1 for lagged DV
+
+# threshold_gas: Base model without Ar term
+LM00_gasPriceThreshold <- threshold_gas ~ attacks_GasFee_Gwei + AttackCount + flashbots_Flag + flashbots_Flag:attacks_GasFee_Gwei + difficulty_log + price_USD_delta + transaction_count_block + Weekyday + Hour  # + attacks_GasUsed or  + avg_gas_lag1 for lagged DV
+
+# avg_gas: Base model with reduced controls(no WeekNumber or Month) and AR-term
+LM01_gasPriceAvg <- avg_gas ~ attacks_GasFee_Gwei + AttackCount + flashbots_Flag + flashbots_Flag:attacks_GasFee_Gwei + difficulty_log + price_USD_delta + transaction_count_block + Weekyday + Hour + lag(avg_gas,1) # + attacks_GasUsed or  + avg_gas_lag1 for lagged DV
+
+# median_gas Base model
+LM01_gasPriceMedian <- median_gas ~ attacks_GasFee_Gwei + AttackCount + flashbots_Flag + flashbots_Flag:attacks_GasFee_Gwei + difficulty_log + price_USD_delta + transaction_count_block + Weekyday + Hour + lag(median_gas,1) # + attacks_GasUsed or  + avg_gas_lag1 for lagged DV
+
+# threshold_gas_Base model with reduced controls(no WeekNumber or Month) and AR-term
+LM01_gasPriceThreshold <- threshold_gas ~ attacks_GasFee_Gwei + AttackCount + flashbots_Flag + flashbots_Flag:attacks_GasFee_Gwei + difficulty_log + price_USD_delta + transaction_count_block + Weekyday + Hour + lag(threshold_gas,1) # + attacks_GasUsed or  + avg_gas_lag1 for lagged DV
+
+
+######################
+
+# Base model with quadratic terms for selected variables (based on visual plots)
+LM02_gasPriceAvg <- avg_gas ~ attacks_GasFee_Gwei + AttackCount + flashbots_Flag + flashbots_Flag:attacks_GasFee_Gwei + difficulty_log + price_USD_delta + transaction_count_block + Weekyday + Hour + avg_gas_lag1 + I(avg_gas_lag1^2) + I(attacks_GasFee_Gwei^2) +I(AttackCount^2) +I(price_USD_delta^2)
+
+# + attacks_GasUsed or  + avg_gas_lag1 for lagged DV
+
+# Base model without AR term
+LM03_gasPriceAvg <- avg_gas ~ attacks_GasFee_Gwei + AttackCount + flashbots_Flag + flashbots_Flag:attacks_GasFee_Gwei + difficulty + price_USD_delta + transaction_count_block + Weekyday + Hour
+
+
+# ADL model from base model for dynlm
+# needs to be time series elemnt to work! Checked with lm() to get same result
+ADL01_gasPriceAvg <- ts(avg_gas) ~ ts(attacks_GasFee_Gwei) + ts(attacks_GasFee_Gwei) + ts(attacks_GasUsed) + ts(AttackCount) + ts(flashbots_Flag) + ts(difficulty) + ts(price_USD_delta) + ts(transaction_count_block) + ts(Weekyday) + ts(Hour) + L(ts(avg_gas),1)
+
+
+```
+
+$ flashbots_Flag           : Factor w/ 1 level "0": 1 1 1 1 1 1 1 1 1 1 ...
+ $ Month                    : Factor w/ 1 level "5": 1 1 1 1 1 1 1 1 1 1 ...
+ $ WeekNumber               : Factor w/ 1 level "21": 1 1 1 1 1 1 1 1 1 1 ...
+ $ Weekyday                 : Factor w/ 1 level "2": 1 1 1 1 1 1 1 1 1 1 ...
+
+
+#####  Run models lm 
+
+```{r}
+# Main regressions
+RS_LM01_gasPriceAvg <- lm(LM01_gasPriceAvg , data = dfRegression)
+
+RS_LM01_gasPriceMedian <- lm(LM01_gasPriceMedian , data = dfRegression)
+
+RS_LM01_gasPriceThreshold <- lm(LM01_gasPriceThreshold , data = dfRegression)
+
+```
+
+```{r}
+#stargazer(RS_LM01_gasPriceAvg, RS_SW05, type = "text", digits = 10) # test if full model here is equal to full model in stepwise R2 calkculations
+stargazer(RS_LM01_gasPriceAvg, RS_LM01_gasPriceMedian, RS_LM01_gasPriceThreshold, type = "text", digits = 10)
+```
+
+
+```{r}
+# quadratic terms models
+RS_LM02_gasPriceAvg <- lm(LM02_gasPriceAvg , data = dfRegression)
+
+```
+
+```{r}
+# Without AR term
+RS_LM00_gasPriceAvg <- lm(LM00_gasPriceAvg , data = dfRegression)
+
+RS_LM00_gasPriceMedian <- lm(LM00_gasPriceMedian , data = dfRegression)
+
+RS_LM00_gasPriceThreshold <- lm(LM00_gasPriceThreshold , data = dfRegression)
+```
+
+
+```{r}
+#NW SE for autocorrelation in errorterms (see assumption testing)
+#SE_NW_LM01 <- sqrt(diag(NeweyWest(RS_LM01_gasPriceAvg, lag = 50, prewhite = 0))) # works
+SE_NW_LM01_White <- sqrt(diag(NeweyWest(RS_LM01_gasPriceAvg, prewhite = 0, lag = 50))) # unsure if it works / takes long
+
+```
+
+
+```{r}
+stargazer(RS_LM00_gasPriceAvg, RS_LM01_gasPriceAvg,
+          RS_LM00_gasPriceMedian ,RS_LM01_gasPriceMedian, 
+          RS_LM00_gasPriceThreshold, RS_LM01_gasPriceThreshold, type = , column.sep.width = "1pt", column.labels = c("No AR", "Incl. AR","No AR", "Incl. AR","No AR", "Incl. AR"), digits = 8) #, se = list(SE_NW_LM01_White)
+```
+
+
+
+
+###### Test bench
+
+
+```{r}
+mean(dfRegression[dfRegression$attacks_GasFee_Gwei > 0,]$attacks_GasFee_Gwei)
+  
+```
+
+
+```{r}
+RS_LM99_gasPriceAvg <- lm(avg_gas ~ difficulty + lag(avg_gas,1), data = dfRegression)
+
+```
+
+```{r}
+RS_LM00_gasPriceAvg <- lm(avg_gas ~ difficulty, data = dfRegression)
+
+```
+ 0.8274219
+```{r}
+stargazer(RS_LM99_gasPriceAvg, RS_LM00_gasPriceAvg, type = "text", digits= 10)
+```
+
+
+```{r}
+# test: lag function of lm() lag(avg_gas,1) works as intended
+RS_LM98_gasPriceAvg <- lm(avg_gas ~ difficulty + avg_gas_lag1 , data = dfRegressionSmall)
+
+```
+
+```{r}
+stargazer(RS_LM99_gasPriceAvg, RS_LM98_gasPriceAvg, type = "text")
+```
+
+
+###### Forward Selection avg_gas
+
+```{r}
+FitStart <- lm(avg_gas ~ difficulty_log + price_USD_delta + transaction_count_block + Weekyday + Hour + lag(avg_gas,1), data = dfRegression) #  or + avg_gas_lag1
+```
+
+```{r}
+stepRS <- stepAIC(FitStart,direction = "forward", scope = formula(RS_LM01_gasPriceAvg))
+```
+
+###### Forward Selection median_gas
+
+```{r}
+FitStart_median <- lm(median_gas ~ difficulty_log + price_USD_delta + transaction_count_block + Weekyday + Hour + lag(median_gas,1), data = dfRegression) #  or + avg_gas_lag1
+```
+
+```{r}
+stepRS <- stepAIC(FitStart_median,direction = "forward", scope = formula(RS_LM01_gasPriceMedian))
+```
+
+###### Forward Selection threshold_gas
+
+```{r}
+FitStart_threshold <- lm(threshold_gas ~ difficulty_log + price_USD_delta + transaction_count_block + Weekyday + Hour + lag(threshold_gas,1), data = dfRegression) #  or + avg_gas_lag1
+```
+
+```{r}
+stepRS <- stepAIC(FitStart_threshold,direction = "forward", scope = formula(RS_LM01_gasPriceThreshold))
+```
+
+
+######  Calculating stepwise R2 avg_gas
+Models with increasing number of variables accorrding to stepwise regression
+```{r}
+SW_names <- c("RS_SW00","RS_SW01","RS_SW02","RS_SW03","RS_SW04","RS_SW05","RS_SW06")
+```
+
+
+```{r}
+# Controls without lag DV
+RS_SW00 <- lm(avg_gas ~ difficulty_log + price_USD_delta + transaction_count_block + Weekyday + Hour, data = dfRegression) 
+
+# Controls only
+RS_SW01 <- lm(avg_gas ~ difficulty_log + price_USD_delta + transaction_count_block + Weekyday + Hour + lag(avg_gas,1), data = dfRegression) 
+
+# attacks_GasFee_Gwei
+RS_SW02 <- lm(avg_gas ~ difficulty_log + price_USD_delta + transaction_count_block + Weekyday + Hour + lag(avg_gas,1)+ attacks_GasFee_Gwei, data = dfRegression) 
+
+# flashbots_Flag
+RS_SW03 <- lm(avg_gas ~ difficulty_log + price_USD_delta + transaction_count_block + Weekyday + Hour + lag(avg_gas,1)+ attacks_GasFee_Gwei + flashbots_Flag, data = dfRegression) 
+
+# AttackCount
+RS_SW04 <- lm(avg_gas ~ difficulty_log + price_USD_delta + transaction_count_block + Weekyday + Hour + lag(avg_gas,1)+ attacks_GasFee_Gwei + flashbots_Flag + AttackCount, data = dfRegression) 
+
+# attacks_GasFee_Gwei:flashbots_Flag
+RS_SW05 <- lm(avg_gas ~ difficulty_log + price_USD_delta + transaction_count_block + Weekyday + Hour + lag(avg_gas,1)+ attacks_GasFee_Gwei + flashbots_Flag + AttackCount + attacks_GasFee_Gwei:flashbots_Flag, data = dfRegression) 
+
+# Full model without lag
+RS_SW06 <- lm(avg_gas ~ difficulty_log + price_USD_delta + transaction_count_block + Weekyday + Hour +
+attacks_GasFee_Gwei + flashbots_Flag + AttackCount + attacks_GasFee_Gwei:flashbots_Flag, data = dfRegression) 
+
+
+```
+
+```{r}
+R2_mdls <- c(summary(RS_SW00)$adj.r.squared,
+             summary(RS_SW01)$adj.r.squared,
+             summary(RS_SW02)$adj.r.squared,
+             summary(RS_SW03)$adj.r.squared,
+             summary(RS_SW04)$adj.r.squared,
+             summary(RS_SW05)$adj.r.squared,
+             summary(RS_SW06)$adj.r.squared
+             )
+R2_mdls_AIC_avg <- c(extractAIC(RS_SW00)[2],
+                 extractAIC(RS_SW01)[2],
+                 extractAIC(RS_SW02)[2],
+                 extractAIC(RS_SW03)[2],
+                 extractAIC(RS_SW04)[2],
+                 extractAIC(RS_SW05)[2],
+                 extractAIC(RS_SW06)[2]
+                 )
+```
+
+```{r}
+dfR2 <- data.frame(SW_names, R2_mdls, R2_mdls_AIC_avg)
+names(dfR2) <- c("model","R2_adj", "AIC")
+# add ID column 
+dfR2$ID <- seq.int(nrow(dfR2))
+dfR2$diff <- c(0, diff(dfR2$R2_adj))
+col_order <- c("ID", "model", "R2_adj",
+               "diff", "AIC")
+dfR2 <- dfR2[, col_order]
+dfR2$ID <- NULL
+dfR2$model <- c("Controls, no AR", "Controls, incl. AR", "attacks_GasFee_Gwei", "flashbots_Flag", "AttackCount","Interaction term", "Full model, no AR")
+```
+
+```{r}
+print(xtable(dfR2, type = "latex", digits = 3))
+```
+
+
+```{r}
+stargazer(RS_SW00,RS_SW01, RS_SW06,no.space = TRUE, intercept.bottom = FALSE,
+          column.sep.width = "1pt", type = "text", digits = 2)
+```
+
+
+######  Calculating stepwise R2 median_gas
+Models with increasing number of variables accorrding to stepwise regression
+```{r}
+SW_names_median <- c("RS_SW00_median","RS_SW01_median","RS_SW02_median","RS_SW03_median","RS_SW04_median","RS_SW05_median","RS_SW06_median")
+```
+
+
+```{r}
+# Controls without lag DV
+RS_SW00_median <- lm(median_gas ~ difficulty_log + price_USD_delta + transaction_count_block + Weekyday + Hour, data = dfRegression) 
+
+# Controls only
+RS_SW01_median <- lm(median_gas ~ difficulty_log + price_USD_delta + transaction_count_block + Weekyday + Hour + lag(median_gas,1), data = dfRegression) 
+
+# attacks_GasFee_Gwei
+RS_SW02_median <- lm(median_gas ~ difficulty_log + price_USD_delta + transaction_count_block + Weekyday + Hour + lag(median_gas,1)+ attacks_GasFee_Gwei, data = dfRegression) 
+
+# flashbots_Flag
+RS_SW03_median <- lm(median_gas ~ difficulty_log + price_USD_delta + transaction_count_block + Weekyday + Hour + lag(median_gas,1)+ attacks_GasFee_Gwei + flashbots_Flag, data = dfRegression) 
+
+# AttackCount
+RS_SW04_median <- lm(median_gas ~ difficulty_log + price_USD_delta + transaction_count_block + Weekyday + Hour + lag(median_gas,1)+ attacks_GasFee_Gwei + flashbots_Flag + AttackCount, data = dfRegression) 
+
+# attacks_GasFee_Gwei:flashbots_Flag
+RS_SW05_median <- lm(median_gas ~ difficulty_log + price_USD_delta + transaction_count_block + Weekyday + Hour + lag(median_gas,1)+ attacks_GasFee_Gwei + flashbots_Flag + AttackCount + attacks_GasFee_Gwei:flashbots_Flag, data = dfRegression) 
+
+# Full model without lag
+RS_SW06_median <- lm(median_gas ~ difficulty_log + price_USD_delta + transaction_count_block + Weekyday + Hour +
+attacks_GasFee_Gwei + flashbots_Flag + AttackCount + attacks_GasFee_Gwei:flashbots_Flag, data = dfRegression) 
+
+
+```
+
+```{r}
+R2_mdls_median <- c(summary(RS_SW00_median)$adj.r.squared,
+             summary(RS_SW01_median)$adj.r.squared,
+             summary(RS_SW02_median)$adj.r.squared,
+             summary(RS_SW03_median)$adj.r.squared,
+             summary(RS_SW04_median)$adj.r.squared,
+             summary(RS_SW05_median)$adj.r.squared,
+             summary(RS_SW06_median)$adj.r.squared
+             )
+R2_mdls_AIC_median <- c(extractAIC(RS_SW00_median)[2],
+                 extractAIC(RS_SW01_median)[2],
+                 extractAIC(RS_SW02_median)[2],
+                 extractAIC(RS_SW03_median)[2],
+                 extractAIC(RS_SW04_median)[2],
+                 extractAIC(RS_SW05_median)[2],
+                 extractAIC(RS_SW06_median)[2]
+                 )
+```
+
+```{r}
+dfR2_median <- data.frame(SW_names_median, R2_mdls_median, R2_mdls_AIC_median)
+names(dfR2_median) <- c("model","R2_adj", "AIC")
+# add ID column 
+dfR2_median$ID <- seq.int(nrow(dfR2_median))
+dfR2_median$diff <- c(0, diff(dfR2_median$R2_adj))
+col_order <- c("ID", "model", "R2_adj",
+               "diff", "AIC")
+dfR2_median <- dfR2_median[, col_order]
+dfR2_median$ID <- NULL
+dfR2_median$model <- c("Controls, no AR", "Controls, incl. AR", "attacks_GasFee_Gwei", "flashbots_Flag", "AttackCount","Interaction term", "Full model, no AR")
+```
+
+
+```{r}
+print(xtable(dfR2_median, type = "latex", digits = 3))
+```
+
+```{r}
+stargazer(RS_SW00_median,RS_SW01_median, RS_SW06_median,no.space = TRUE, intercept.bottom = FALSE,
+          column.sep.width = "1pt", type = "text", digits = 2)
+```
+
+######  Calculating stepwise R2 threshold_gas
+Models with increasing number of variables accorrding to stepwise regression
+```{r}
+SW_names_threshold <- c("RS_SW00_threshold","RS_SW01_threshold","RS_SW02_threshold","RS_SW03_threshold","RS_SW04_threshold","RS_SW05_threshold","RS_SW06_threshold")
+```
+
+
+```{r}
+# Controls without lag DV
+RS_SW00_threshold <- lm(threshold_gas ~ difficulty_log + price_USD_delta + transaction_count_block + Weekyday + Hour, data = dfRegression) 
+
+# Controls only
+RS_SW01_threshold <- lm(threshold_gas ~ difficulty_log + price_USD_delta + transaction_count_block + Weekyday + Hour + lag(threshold_gas,1), data = dfRegression) 
+
+# flashbots_Flag
+RS_SW02_threshold <- lm(threshold_gas ~ difficulty_log + price_USD_delta + transaction_count_block + Weekyday + Hour + lag(threshold_gas,1)+ flashbots_Flag, data = dfRegression) 
+
+# attacks_GasFee_Gwei
+RS_SW03_threshold <- lm(threshold_gas ~ difficulty_log + price_USD_delta + transaction_count_block + Weekyday + Hour + lag(threshold_gas,1)+ flashbots_Flag + attacks_GasFee_Gwei, data = dfRegression)
+
+# AttackCount
+RS_SW04_threshold <- lm(threshold_gas ~ difficulty_log + price_USD_delta + transaction_count_block + Weekyday + Hour + lag(threshold_gas,1)+ flashbots_Flag + attacks_GasFee_Gwei + AttackCount, data = dfRegression)
+
+# attacks_GasFee_Gwei:flashbots_Flag
+RS_SW05_threshold <- lm(threshold_gas ~ difficulty_log + price_USD_delta + transaction_count_block + Weekyday + Hour + lag(threshold_gas,1)+ flashbots_Flag + attacks_GasFee_Gwei + AttackCount + flashbots_Flag:attacks_GasFee_Gwei, data = dfRegression)
+
+# Full model without lag
+RS_SW06_threshold <- lm(threshold_gas ~ difficulty_log + price_USD_delta + transaction_count_block + Weekyday + Hour +
+attacks_GasFee_Gwei + flashbots_Flag + AttackCount + attacks_GasFee_Gwei:flashbots_Flag, data = dfRegression) 
+
+
+```
+
+```{r}
+R2_mdls_threshold <- c(summary(RS_SW00_threshold)$adj.r.squared,
+             summary(RS_SW01_threshold)$adj.r.squared,
+             summary(RS_SW02_threshold)$adj.r.squared,
+             summary(RS_SW03_threshold)$adj.r.squared,
+             summary(RS_SW04_threshold)$adj.r.squared,
+             summary(RS_SW05_threshold)$adj.r.squared,
+             summary(RS_SW06_threshold)$adj.r.squared
+             )
+
+R2_mdls_AIC_threshold <- c(extractAIC(RS_SW00_threshold)[2],
+                 extractAIC(RS_SW01_threshold)[2],
+                 extractAIC(RS_SW02_threshold)[2],
+                 extractAIC(RS_SW03_threshold)[2],
+                 extractAIC(RS_SW04_threshold)[2],
+                 extractAIC(RS_SW05_threshold)[2],
+                 extractAIC(RS_SW06_threshold)[2]
+                 )
+```
+
+```{r}
+dfR2_threshold <- data.frame(SW_names_threshold, R2_mdls_threshold, R2_mdls_AIC_threshold)
+names(dfR2_threshold) <- c("model","R2_adj", "AIC")
+# add ID column 
+dfR2_threshold$ID <- seq.int(nrow(dfR2_threshold))
+dfR2_threshold$diff <- c(0, diff(dfR2_threshold$R2_adj))
+col_order <- c("ID", "model", "R2_adj",
+               "diff", "AIC")
+dfR2_threshold <- dfR2_threshold[, col_order]
+dfR2_threshold$ID <- NULL
+dfR2_threshold$model <- c("Controls, no AR", "Controls, incl. AR", "flashbots_Flag","attacks_GasFee_Gwei", "AttackCount","Interaction term", "Full model, no AR")
+```
+
+
+```{r}
+print(xtable(dfR2_threshold, type = "latex", digits = 3))
+```
+
+
+```{r}
+stargazer(RS_SW00_threshold,RS_SW01_threshold, RS_SW06_threshold,no.space = TRUE, intercept.bottom = FALSE,
+          column.sep.width = "1pt", type = "text", digits = 2)
+```
+
+
+
+#####  Run models gls
+ARMA(p,q) model where p is the order of the AR part and q is the order of the MA part 
+```{r}
+#dfRegression <- na.omit(dfRegression)
+
+GLS_mdl02_gasPriceAvg <- gls(avg_gas ~ difficulty, correlation = corAR1(form = ~ IDSeq), data=dfRegressionSmall) #correlation=corARMA(p=1), , method="ML"
+
+#LM00_gasPriceAvg
+```
+
+```{r}
+GLS_mdl02_gasPriceAvg
+#stargazer(GLS_mdl02_gasPriceAvg, type="text")
+```
+
+
+
+```{r}
+# GLS() from rms package https://www.rdocumentation.org/packages/rms/versions/6.3-0/topics/Gls
+GLS_mdl02_gasPriceAvg <- Gls(avg_gas ~ AttackCount , correlation = corAR1(form = ~ block_number), data=dfRegression) 
+
+```
+
+
+
+#####  Dynlm Run Autoregressive Distributed Lag (ADL) Model
+
+```{r}
+RS_ADL01_gasPriceAvg <- dynlm(ts(avg_gas) ~ ts(difficulty) + L(ts(avg_gas),1), dfRegression)
+
+```
+
+
+
+```{r}
+stargazer(RS_ADL01_gasPriceAvg, RS_ADL02_gasPriceAvg, type = "text")
+```
+
+
+```{r}
+#Newey-West SEs
+# prewhite is issue!
+SE_NW_ADL01 <- sqrt(diag(NeweyWest(RS_ADL01_gasPriceAvg, lag = 50, prewhite = 0)))
+
+    #sqrt(diag(NeweyWest(RS_ADL01_gasPriceAvg)))
+```
+
+```{r}
+coeftest(SE_NW_ADL01, vcov.=NeweyWest(model, lag=0, prewhite=FALSE, adjust=TRUE, verbose=TRUE))
+```
+
+
+```{r}
+# RSE: stargazer(full_model, full_model, full_model, se = list(seBasic, seWhite, seClust),type = "text")
+stargazer(RS_ADL01_gasPriceAvg, type="text",se = list(SE_NW_ADL01), no.space = TRUE)
+```
+
+
+#####  ACF/PACF Inspect models for Autocorrelation (ACF, PACF,Durbin-Watson)
+Extremly small conficecne intervals are due to i) high number of observations and low mean of residuals (see confidence interval formula)
+
+```{r}
+# Estimate correlation of residuals of lag = 1 https://www.youtube.com/watch?v=xtqRe8MPKoY
+# we simplify rto lag 1 => use for AR(1) explanation
+# need model without AR(1)
+#"In other words, autocorrelation is nothing but a correlation coefficient." https://blog.quantinsti.com/autoregression/
+n <- length(residuals(RS_LM00_gasPriceThreshold))
+cor(residuals(RS_LM00_gasPriceThreshold)[-1],residuals(RS_LM00_gasPriceThreshold)[-n])
+
+# result: 0.8099724 => Extremly high correlation
+```
+0.8087612 avg
+0.8753205 median
+0.7680189 threshold
+```{r}
+acf(residuals(RS_LM02_gasPriceAvg))
+
+```
+
+```{r}
+# PACF: Used for AR(x) determination
+# acf(residuals(RS_LM02_gasPriceAvg), type="partial")
+acf(residuals(RS_LM99_gasPriceAvg), type="partial") # model with lagged DV
+```
+
+```{r}
+
+# Serial correlation is checked before homoskedasticity, as any serial 
+# correlation will generally invalidate any test on heteroskedasticity
+# (Wooldridge, 2013, p. 435)
+
+# Breusch-Godfrey Test (Greene, 2018, p. 1000)
+bgtest(RS_LM99_gasPriceAvg)
+# Small p value indicates that there is still autocorrelation in error https://www.statology.org/breusch-godfrey-test-in-r/
+```
+
+
+```{r}
+pacf(residuals(RS_LM02_gasPriceAvg), 40, type="o")
+```
+
+
+```{r}
+durbinWatsonTest(RS_mdl02_gasPriceAvg, max.lag=2)
+# error solution: https://im-coder.com/r-auf-macos-fehler-vektor-speicher-erschoepft-limit-erreicht.html
+```
+
+##### Assumption testing
+https://www.projectpro.io/recipes/verify-assumptions-of-linear-regression-r-plots
+https://towardsdatascience.com/testing-the-assumptions-of-linear-regression-f38857abc08a
+
+
+###### Stationarity test (avg_clean, median, threshold gas price)
+
+https://www.statology.org/dickey-fuller-test-in-r/
+```{r}
+adf.test(dfRegression$avg_gas)
+```
+
+```{r}
+adf.test(dfRegression$median_gas)
+```
+
+```{r}
+adf.test(dfRegression$threshold_gas)
+```
+
+###### Linearity Ramsey RESET test
+Optional: based on visual result decide if IV should be log transfromed if skewed (https://towardsdatascience.com/testing-the-assumptions-of-linear-regression-f38857abc08a)
+```{r}
+resettest(RS_LM01_gasPriceAvg, power=2) # optional regressor argument
+```
+
+```{r}
+resettest(RS_LM02_gasPriceAvg, power=2) # optional regressor argument
+# remains small p value menaing not-linear
+```
+
+
+
+```{r}
+# takes very long fro all variables
+#, "price_USD_delta", "transaction_count_block"
+dfRegression %>%
+  ggpairs(columns = c("avg_gas","attacks_GasFee_Gwei","AttackCount", "difficulty_log")) 
+#, "AttackCount", "difficulty_log", "price_USD_delta","transaction_count_block","avg_gas_lag1"
+```
+
+
+
+
+```{r}
+# Visual inspection ins atter plots of all DV (sepertely) and IV
+ggplot(dfRegression,aes(avg_gas, attacks_GasFee_Gwei)) + 
+  geom_point() + labs(x = 'avg_gas', y = 'attack_gasfee')
+
+#let R set thhe model by itself with leaving geom.smooth() empty
+#scatter + geom_point() + geom_smooth() + labs(x = 'income', y = 'score')
+```
+
+
+
+######  Multicollinearity check (VIF) 
+
+
+```{r}
+vif <- vif(RS_LM01_gasPriceAvg)
+```
+
+```{r}
+stargazer(vif, type = "text")
+# we excluded "attacks_GasUsed" from model due to VIF over 8
+```
+
+
+https://www.statology.org/variance-inflation-factor-r/
+http://www.sthda.com/english/articles/39-regression-model-diagnostics/160-multicollinearity-essentials-and-vif-in-r/
+
+###### Zero conditional mean / Mean independence of the variable of interest
+strict exogeneity required in time-series for unbiasedness, contemporaneous
+exogeneity sufficient for consistent estimators in large samples (bias 
+converges to zero in large samples)
+Stock & Watson (2015, p.234) state that conditional mean independence for the  
+variable of interest is sufficient to fulfill this requirement and enables
+a causal interpretation for the variable of interest (not for other
+independent variables that might not be exogenous)
+
+New Covid cases and the reproduction rate of infections are very likely
+to be strictly exogenous as an influence of stock returns on these variables
+seems very unlikely (at any possible time lag). This would fulfill the 
+requirement of strict exogeneity that the errors are independent of the 
+independent variables from any time period. Also a lagged effect of the
+reproduction rate or new cases on stock returns seem unlikely, as this
+information could have been incorporated into stock prices already the day
+before. Only possibility for the conditional independence to not hold
+would be an omitted variable that correlates with the variables of interest
+and the stock returns
+
+```{r}
+
+# f_reproduction_rate <- subset(df_country1, (!is.na(df_country1$reproduction_rate))) # old
+
+cor(dfRegression$attacks_GasFee_Gwei, RS_LM01_gasPriceAvg$residuals)
+cor(dfRegression$AttackCount, RS_LM01_gasPriceAvg$residuals)
+
+```
+
+All correlations close to 0
+
+```{r}
+mean(RS_LM01_gasPriceAvg$residuals)
+```
+The mean of the residuals in all models very close to 0.
+If the residuals are independent of all the reproduction rate and the new
+cases of all periods and the expected value of the residuals is zero, the
+assumption of strict exogeneity holds. (Wooldridge, 2013, p.350)
+
+The mean of the residuals in all models very close to 0.
+If the residuals are independent of all the reproduction rate and the new
+cases of all periods and the expected value of the residuals is zero, the
+assumption of strict exogeneity holds. (Wooldridge, 2013, p.350)
+
+Visual test:
+Seems to be kindy random distributed which is good (prpbaly becaus eof the number of observations)
+```{r}
+plot(RS_LM01_gasPriceAvg$residuals)
+
+```
+
+
+```{r}
+ggplot(RS_LM01_gasPriceAvg,aes(residuals, attacks_GasFee_Gwei)) + 
+  geom_point() + labs(x = 'avg_gas', y = 'attack_gasfee')
+```
+
+
+######  Serial correlation
+
+ For cross-sectional data the assumption is that data generation is fixed
+ or random, this is not the case for time-series data as the observation from
+ t_s is always related to the observation of t_{s+h} through its entity,
+ which is the same for both observations. So in the cross-sectional case the
+ random or fixed data generation leads to uncorrelated errors across the 
+ observations. In time-series this is the case when there is no serial 
+ correlation among the errors, thus the assumption is adjusted to no serial
+ correlation from a random or fixed data generation (Wooldridge, 2013, p.353)
+
+
+ Serial correlation is checked before homoskedasticity, as any serial 
+ correlation will generally invalidate any test on heteroskedasticity
+ (Wooldridge, 2013, p. 435)
+
+Breusch-Godfrey Test (Greene, 2018, p. 1000)
+
+```{r}
+bgtest(RS_LM01_gasPriceAvg)
+```
+Indicates serial correlation for RS_LM01_gasPriceAvg
+which are therfore reported with Newey-West SEs, which also counteract heteroscadicity
+
+###### Homoskedasticity
+Serial correlation is checked before homoskedasticity, as any serial 
+correlation will generally invalidate any test on heteroskedasticity (Wooldridge, 2013, p. 435)
+Those models where the Breusch-Godfrey test did not indicate serially
+correlated errors are tested for heteroskedastic errors with the Breusch-Pagan Test
+Counetracted with  Newey-West SEs
+
+######Normally distributed errors
+Visual inspection
+Discrete returns
+Mdl
+
+```{r}
+ggplot(dfRegression, aes(RS_LM01_gasPriceAvg$residuals)) + geom_density() +
+  stat_function(fun = dnorm, args = list(mean = mean(RS_LM01_gasPriceAvg$residuals), 
+                                         sd = sd(RS_LM01_gasPriceAvg$residuals)), 
+                color = 'red')
+```
+Seems to be kindy random distributed cwchih is good
+```{r}
+plot(RS_LM01_gasPriceAvg$residuals)
+
+```
+
+
+##### Save r image
+
+```{r}
+save.image(file="/Volumes/Extreme SSD/MEV_ENV_v1.RData")
+```
+
+```{r}
+load("/Volumes/Extreme SSD/MEV_ENV_v1.RData")
+```
+
+
+##### Notes
+- see ASAP lectures and group work for
+  - code Corplots
+  - Correlation measure (VIP?)
+  - set up of regression in a clean way (reproducable with 3 variables)
+  - add interaction terms
+  - add robust standard errors in stargazer (but the right ones)
+
+- see Nils code
+  - all assumptions checks
+  
+- Other sources
+  - adding a AR term and specifying the optimal lag
+    - https://stackoverflow.com/questions/37281060/ar-function-vs-lag-variables-in-lm (use of lag())
+    - https://community.rstudio.com/t/linear-multiple-regression-with-autoregressive-term/114625/7
+    - https://www.econometrics-with-r.org/14-3-autoregressions.html
+    - https://stat.ethz.ch/R-manual/R-devel/library/stats/html/ar.html
+  - Using laggs between DV and IV, see automatic solution 
+    - dynlm-package: https://cran.r-project.org/web/packages/dynlm/index.html
+
+- Model
+  - Optional: using max / avg gas price per block and interaction term with attack count, which could represent the competition between attackers
+  
+
+
+
+
+
+
+
+
+
+
+
