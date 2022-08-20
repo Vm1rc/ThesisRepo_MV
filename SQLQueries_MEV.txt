@@ -1,0 +1,145 @@
+This document contains the main SQL queries used to retrieve the Ethereum data from Google BiGQuery (bigquery-public-data.crypto_ethereum).
+
+### Select required data from public data set to be stored in a single table:
+
+/*https://dbdiagram.io/d/602e721380d742080a3b1265*/
+
+SELECT
+
+/* From transfers table */
+  transfers.token_address AS tf_tokenAddress,
+  transfers.transaction_hash,
+  transfers.block_number,
+  transfers.block_hash,
+  transfers.from_address,
+  transfers.to_address,
+  transfers.value,
+  transfers.log_index,
+  transfers.block_timestamp,
+
+/* From transaction table */
+  transactions.`hash` AS transTable_hash,  
+  transactions.transaction_type,
+  transactions.transaction_index,
+  transactions.from_address AS trans_fromAddress,
+  transactions.to_address AS trans_toAddress,
+  transactions.gas_price AS trans_gasPrice,
+  transactions.receipt_effective_gas_price,
+  transactions.gas AS trans_gas,
+  transactions.receipt_gas_used,
+  transactions.max_fee_per_gas,
+  transactions.max_priority_fee_per_gas,
+  transactions.block_number AS trans_blockNumber,
+  
+  /* From tokens table */
+  tokens.name,
+  tokens.symbol,
+  tokens.address AS token_Address,
+  
+  /* From Blocks table */
+  blocks.number AS blockT_number, 
+  blocks.miner,
+  blocks.`hash` AS blockT_hash,
+  blocks.gas_used AS blockT_gasUsed,
+  blocks.gas_limit AS blockT_gasLimit
+
+FROM
+  `bigquery-public-data.crypto_ethereum.token_transfers` AS transfers
+
+LEFT JOIN 
+  `bigquery-public-data.crypto_ethereum.transactions` AS transactions
+ON
+  (transfers.transaction_hash = transactions.`hash`)
+
+LEFT JOIN
+  `bigquery-public-data.crypto_ethereum.tokens` AS tokens
+ON
+  (transfers.token_address = tokens.address )
+
+LEFT JOIN 
+ `bigquery-public-data.crypto_ethereum.blocks` as blocks
+ON
+  (transfers.block_hash = blocks.`hash`)
+
+
+/*WHERE transfers.transaction_hash = "0x0000000605df365a8aac7506d995391b760f238366f1526f158912629d855051" */
+WHERE transfers.block_number BETWEEN  10093070 AND 12500188 
+
+/* result table: 'ExtractAll12042022' */ 
+
+### Select only transactions in connection with Uniswap V2 pool addresses (based on LP list)
+SELECT 
+transaction_hash,
+block_number,
+transaction_index,
+log_index,
+
+from_address,
+to_address,
+trans_fromAddress,
+trans_toAddress,
+poolId,
+
+tf_tokenAddress,
+name as tokenName,
+
+value,
+trans_gasPrice,
+receipt_gas_used as gasUsed,
+receipt_effective_gas_price as effective_gas_price
+
+FROM `mevtest.MEVextract.ExtractAll12042022` AS main
+
+INNER JOIN 
+`mevtest.MEVextract.LPs_UniswapV2` as LP
+
+ON 
+
+(main.from_address = LP.poolId)
+
+WHERE block_number BETWEEN  10093070 AND 12500188 
+
+UNION ALL
+
+SELECT 
+transaction_hash,
+block_number,
+transaction_index,
+log_index,
+
+from_address,
+to_address,
+trans_fromAddress,
+trans_toAddress,
+poolId,
+
+tf_tokenAddress,
+name as tokenName,
+
+value,
+trans_gasPrice,
+receipt_gas_used as gasUsed,
+receipt_effective_gas_price as effective_gas_price
+
+FROM `mevtest.MEVextract.ExtractAll12042022` AS main
+
+INNER JOIN 
+`mevtest.MEVextract.LPs_UniswapV2` as LP
+
+ON 
+
+(main.to_address = LP.poolId)
+
+WHERE block_number BETWEEN  10093070 AND 12500188 
+
+ORDER BY block_number ASC, transaction_index ASC, log_index ASC
+
+### Collect threshold gas price
+SELECT f.block_number, /* f.`hash`, */ f.gas_price, 
+FROM (
+    SELECT block_number, MIN(gas_price) AS minGasPrice
+    FROM `bigquery-public-data.crypto_ethereum.transactions`
+    WHERE gas_price > 1000000000 AND block_number BETWEEN  10093070 AND 12500188 
+    GROUP BY block_number
+) AS x inner join `bigquery-public-data.crypto_ethereum.transactions` as f on f.block_number = x.block_number and f.gas_price = x.minGasPrice
+
